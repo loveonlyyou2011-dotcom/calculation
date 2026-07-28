@@ -13,14 +13,12 @@ st.set_page_config(
     layout="wide",
 )
 
-# --- Updated Google Sheets URL ---
 DEFAULT_SHEET_URL = "https://docs.google.com/spreadsheets/d/1way2EcB_FqbNp2hF7KUytd6u2OPDfR-oumyCTvK986I/edit?usp=sharing"
 
 
 # --- Google Sheets Connection ---
 @st.cache_resource(ttl=60)
 def init_gspread():
-    """Streamlit Secrets의 인증 정보와 지정된 시트 URL을 연동"""
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive",
@@ -30,10 +28,18 @@ def init_gspread():
 
     if "GCP_SERVICE_ACCOUNT" in st.secrets:
         try:
-            if isinstance(st.secrets["GCP_SERVICE_ACCOUNT"], str):
-                creds_dict = json.loads(st.secrets["GCP_SERVICE_ACCOUNT"])
+            # Secrets 데이터 타입(문자열 JSON 또는 TOML Dict) 유연하게 파싱
+            sec = st.secrets["GCP_SERVICE_ACCOUNT"]
+            if isinstance(sec, str):
+                creds_dict = json.loads(sec)
             else:
-                creds_dict = dict(st.secrets["GCP_SERVICE_ACCOUNT"])
+                creds_dict = dict(sec)
+
+            # private_key 내부의 \n 처리 보완
+            if "private_key" in creds_dict:
+                creds_dict["private_key"] = creds_dict["private_key"].replace(
+                    "\\n", "\n"
+                )
 
             creds = Credentials.from_service_account_info(
                 creds_dict, scopes=scopes
@@ -51,8 +57,8 @@ def init_gspread():
             return sheet
         except Exception as e:
             st.error(
-                f"🚨 구글 시트 연결 중 에러 발생: {e}\n\n"
-                "구글 시트 우측 상단 '공유' 버튼에서 권한이 '편집자'로 되어 있는지 확인해 주세요."
+                f"🚨 구글 시트 연결 중 인증 오류 발생: {e}\n\n"
+                "Streamlit Secrets의 'GCP_SERVICE_ACCOUNT' private_key 형식을 확인해 주세요."
             )
             return None
     else:
@@ -63,7 +69,6 @@ def init_gspread():
 
 
 def fetch_data(sheet):
-    """구글 시트 데이터 로드"""
     if sheet is None:
         return pd.DataFrame(
             columns=["timestamp", "month", "member", "category", "amount"]
@@ -85,7 +90,6 @@ def fetch_data(sheet):
 
 
 def append_data(sheet, row_data):
-    """구글 시트에 신규 데이터 행 추가"""
     if sheet is None:
         raise ValueError(
             "구글 시트 연결이 설정되지 않았습니다. Secrets 설정을 확인해 주세요."
