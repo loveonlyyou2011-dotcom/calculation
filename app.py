@@ -8,15 +8,17 @@ import streamlit as st
 
 # --- Page Configuration ---
 st.set_page_config(
-    page_title="팀 예산 관리 시스템", page_icon="📊", layout="wide"
+    page_title="팀 예산 관리 시스템",
+    page_icon="📊",
+    layout="wide",
 )
 
 # --- Updated Google Sheets URL ---
-DEFAULT_SHEET_URL = "https://docs.google.com/spreadsheets/d/101YSfB6L3tCa8vAVTGLbQzFEWQmutyOXR-bi9vIGr4A/edit?usp=drive_link"
+DEFAULT_SHEET_URL = "https://docs.google.com/spreadsheets/d/1way2EcB_FqbNp2hF7KUytd6u2OPDfR-oumyCTvK986I/edit?usp=sharing"
 
 
 # --- Google Sheets Connection ---
-@st.cache_resource(ttl=60)  # 캐시 주기를 60초로 짧게 설정하여 실시간성 강화
+@st.cache_resource(ttl=60)
 def init_gspread():
     """Streamlit Secrets의 인증 정보와 지정된 시트 URL을 연동"""
     scopes = [
@@ -28,7 +30,6 @@ def init_gspread():
 
     if "GCP_SERVICE_ACCOUNT" in st.secrets:
         try:
-            # Secrets에서 JSON 파싱
             if isinstance(st.secrets["GCP_SERVICE_ACCOUNT"], str):
                 creds_dict = json.loads(st.secrets["GCP_SERVICE_ACCOUNT"])
             else:
@@ -40,7 +41,7 @@ def init_gspread():
             client = gspread.authorize(creds)
             sheet = client.open_by_url(sheet_url).sheet1
 
-            # 시트가 비어있다면 초기 헤더 생성
+            # 시트가 완전히 비어있다면 초기 헤더 작성
             existing_records = sheet.get_all_values()
             if not existing_records:
                 sheet.append_row(
@@ -50,7 +51,8 @@ def init_gspread():
             return sheet
         except Exception as e:
             st.error(
-                f"🚨 구글 시트 연결 중 에러 발생: {e}\n\n구글 시트 공유 권한이 '편집자'로 설정되어 있는지 확인해주세요."
+                f"🚨 구글 시트 연결 중 에러 발생: {e}\n\n"
+                "구글 시트 우측 상단 '공유' 버튼에서 권한이 '편집자'로 되어 있는지 확인해 주세요."
             )
             return None
     else:
@@ -61,7 +63,7 @@ def init_gspread():
 
 
 def fetch_data(sheet):
-    """구글 시트 데이터 불러오기"""
+    """구글 시트 데이터 로드"""
     if sheet is None:
         return pd.DataFrame(
             columns=["timestamp", "month", "member", "category", "amount"]
@@ -76,20 +78,19 @@ def fetch_data(sheet):
 
         return df
     except Exception as e:
-        st.error(f"데이터 조회 중 에러: {e}")
+        st.error(f"데이터 조회 중 에러 발생: {e}")
         return pd.DataFrame(
             columns=["timestamp", "month", "member", "category", "amount"]
         )
 
 
 def append_data(sheet, row_data):
-    """구글 시트에 신규 행 추가"""
+    """구글 시트에 신규 데이터 행 추가"""
     if sheet is None:
         raise ValueError(
-            "구글 시트가 연결되지 않았습니다. Secrets 설정을 확인해 주세요."
+            "구글 시트 연결이 설정되지 않았습니다. Secrets 설정을 확인해 주세요."
         )
 
-    # 데이터 타입 변환 (gspread 호환)
     formatted_row = [str(x) for x in row_data]
     sheet.append_row(formatted_row)
 
@@ -138,18 +139,18 @@ with tab1:
 
             if submitted:
                 if member == "선택하세요":
-                    st.error("팀원을 선택해주세요.")
+                    st.error("팀원을 선택해 주세요.")
                 elif amount <= 0:
-                    st.error("사용 금액을 0원 이상 입력해주세요.")
+                    st.error("사용 금액을 0원 이상 입력해 주세요.")
                 else:
                     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     new_row = [timestamp, month, member, category, amount]
 
                     try:
                         append_data(sheet, new_row)
-                        st.success("새 구글 시트에 데이터가 성공적으로 저장되었습니다!")
-                        st.cache_resource.clear()  # 저장 후 즉시 최신 데이터 반영
-                        st.rerun()  # 화면 새로고침
+                        st.success("구글 시트에 데이터가 성공적으로 저장되었습니다!")
+                        st.cache_resource.clear()
+                        st.rerun()
                     except Exception as e:
                         st.error(f"❌ 저장 실패: {e}")
 
