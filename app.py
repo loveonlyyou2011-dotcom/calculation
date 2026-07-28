@@ -11,12 +11,12 @@ st.set_page_config(
     page_title="팀 예산 관리 시스템", page_icon="📊", layout="wide"
 )
 
-# --- Google Sheets URL (기본값 설정) ---
-DEFAULT_SHEET_URL = "https://docs.google.com/spreadsheets/d/1eDRHR3Jfd0P7hwmZy1d_Ncdb-AXhGhwe62lFaNKjF8s/edit?usp=drive_link"
+# --- Updated Google Sheets URL ---
+DEFAULT_SHEET_URL = "https://docs.google.com/spreadsheets/d/101YSfB6L3tCa8vAVTGLbQzFEWQmutyOXR-bi9vIGr4A/edit?usp=drive_link"
 
 
 # --- Google Sheets Connection ---
-@st.cache_resource(ttl=300)
+@st.cache_resource(ttl=60)  # 캐시 주기를 60초로 짧게 설정하여 실시간성 강화
 def init_gspread():
     """Streamlit Secrets의 인증 정보와 지정된 시트 URL을 연동"""
     scopes = [
@@ -24,19 +24,23 @@ def init_gspread():
         "https://www.googleapis.com/auth/drive",
     ]
 
-    # Secrets에서 URL 및 인증정보 로드
     sheet_url = st.secrets.get("SPREADSHEET_URL", DEFAULT_SHEET_URL)
 
     if "GCP_SERVICE_ACCOUNT" in st.secrets:
         try:
-            creds_dict = json.loads(st.secrets["GCP_SERVICE_ACCOUNT"])
+            # Secrets에서 JSON 파싱
+            if isinstance(st.secrets["GCP_SERVICE_ACCOUNT"], str):
+                creds_dict = json.loads(st.secrets["GCP_SERVICE_ACCOUNT"])
+            else:
+                creds_dict = dict(st.secrets["GCP_SERVICE_ACCOUNT"])
+
             creds = Credentials.from_service_account_info(
                 creds_dict, scopes=scopes
             )
             client = gspread.authorize(creds)
             sheet = client.open_by_url(sheet_url).sheet1
 
-            # 만약 시트가 비어있다면 초기 헤더 추가
+            # 시트가 비어있다면 초기 헤더 생성
             existing_records = sheet.get_all_values()
             if not existing_records:
                 sheet.append_row(
@@ -45,9 +49,14 @@ def init_gspread():
 
             return sheet
         except Exception as e:
-            st.error(f"구글 시트 연결 오류: {e}")
+            st.error(
+                f"🚨 구글 시트 연결 중 에러 발생: {e}\n\n구글 시트 공유 권한이 '편집자'로 설정되어 있는지 확인해주세요."
+            )
             return None
     else:
+        st.warning(
+            "⚠️ Streamlit Secrets에 'GCP_SERVICE_ACCOUNT' 정보가 등록되지 않았습니다."
+        )
         return None
 
 
@@ -66,7 +75,8 @@ def fetch_data(sheet):
             df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0)
 
         return df
-    except Exception:
+    except Exception as e:
+        st.error(f"데이터 조회 중 에러: {e}")
         return pd.DataFrame(
             columns=["timestamp", "month", "member", "category", "amount"]
         )
@@ -74,8 +84,14 @@ def fetch_data(sheet):
 
 def append_data(sheet, row_data):
     """구글 시트에 신규 행 추가"""
-    if sheet:
-        sheet.append_row(row_data)
+    if sheet is None:
+        raise ValueError(
+            "구글 시트가 연결되지 않았습니다. Secrets 설정을 확인해 주세요."
+        )
+
+    # 데이터 타입 변환 (gspread 호환)
+    formatted_row = [str(x) for x in row_data]
+    sheet.append_row(formatted_row)
 
 
 # --- Initialize Connection ---
@@ -83,11 +99,6 @@ sheet = init_gspread()
 
 st.title("📊 팀 예산 관리 시스템")
 st.caption("부장님 보고용 월별 예산 취합 및 대시보드")
-
-if sheet is None:
-    st.info(
-        "💡 Google Cloud 서비스 계정 비밀키(`GCP_SERVICE_ACCOUNT`)가 Streamlit Secrets에 등록되어 있어야 완전한 데이터 저장이 가능합니다."
-    )
 
 # --- App Layout (Tabs) ---
 tab1, tab2 = st.tabs(["📝 데이터 입력", "📈 전체 대시보드"])
@@ -136,10 +147,11 @@ with tab1:
 
                     try:
                         append_data(sheet, new_row)
-                        st.success("지정한 구글 시트에 성공적으로 데이터가 입력되었습니다!")
-                        st.cache_data.clear()
+                        st.success("새 구글 시트에 데이터가 성공적으로 저장되었습니다!")
+                        st.cache_resource.clear()  # 저장 후 즉시 최신 데이터 반영
+                        st.rerun()  # 화면 새로고침
                     except Exception as e:
-                        st.error(f"저장 중 오류 발생: {e}")
+                        st.error(f"❌ 저장 실패: {e}")
 
     with col2:
         st.subheader("📂 최근 입력 내역")
