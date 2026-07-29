@@ -199,8 +199,8 @@ with tab2:
                         
                         prompt = f"다음은 우리 팀의 예산 사용 내역 데이터입니다. 이 데이터를 분석해서 지출 패턴, 비중, 트렌드 등 가장 눈에 띄는 특징이나 인사이트를 찾아주세요. 반드시 **딱 한 줄로 요약**해서 대답해야 합니다.\n\n데이터: {simplified_data}"
                         
-                        # 2. REST API를 통해 Gemini 호출 (모델명 gemini-1.5-flash-latest)
-                        api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={api_key}"
+                        # 2. REST API를 통해 Gemini 호출 (모델명 gemini-3-flash-preview)
+                        api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key={api_key}"
                         payload = {
                             "contents": [{"parts": [{"text": prompt}]}],
                             "systemInstruction": {
