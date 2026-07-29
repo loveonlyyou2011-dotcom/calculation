@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>팀 예산 현황 및 취합 시스템</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Pretendard:wght@400;600;700&display=swap');
+        body { font-family: 'Pretendard', sans-serif; background-color: #f8fafc; }
+        .card { background: white; border-radius: 1rem; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }
+        .tab-active { border-bottom: 2px solid #2563eb; color: #2563eb; }
+        
+        /* 로딩 오버레이 스타일 */
+        #loadingOverlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(255, 255, 255, 0.8);
+            z-index: 100;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+        }
+        .spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            border-left-color: #2563eb;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="p-4 md:p-8 relative">
+
+    <!-- 로딩 오버레이 -->
+    <div id="loadingOverlay">
+        <div class="spinner mb-4"></div>
+        <p class="text-gray-700 font-semibold" id="loadingText">데이터를 불러오는 중입니다...</p>
+    </div>
+
+    <div class="max-w-6xl mx-auto">
+        <!-- Header -->
+        <header class="mb-8 text-center">
+            <h1 class="text-3xl font-bold text-gray-800">📊 팀 예산 관리 시스템</h1>
+            <p class="text-gray-500 mt-2">부장님 보고용 월별 예산 취합 및 대시보드</p>
+        </header>
+
+        <!-- Navigation Tabs -->
+        <div class="flex border-b border-gray-200 mb-8">
+            <button onclick="switchTab('input')" id="tab-input" class="px-6 py-2 font-semibold transition-colors tab-active">데이터 입력</button>
+            <button onclick="switchTab('dashboard')" id="tab-dashboard" class="px-6 py-2 font-semibold text-gray-500 hover:text-blue-600 transition-colors">전체 대시보드</button>
+        </div>
+
+        <!-- Section 1: Input Form -->
+        <div id="section-input" class="grid grid-cols-1 md:grid-cols-3 gap-8">
+            <div class="md:col-span-1 card p-6">
+                <h2 class="text-xl font-bold mb-4 flex items-center">
+                    <span class="mr-2">📝</span> 내역 입력
+                </h2>
+                <form id="budgetForm" class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700">팀원 선택</label>
+                        <select id="member" class="mt-1 block w-full rounded-md border-gray-300 border p-2 focus:ring-blue-500 focus:border-blue-500" required>
+                            <option value="">팀원을 선택하세요</option>
+                            <option value="부장님">부장님</option>
+                            <option value="팀원1">팀원1</option>
+                            <option value="팀원2">팀원2</option>
+                            <option value="팀원3">팀원3</option>
+                            <option value="팀원4">팀원4</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700">해당 월</label>
+                        <input type="month" id="month" class="mt-1 block w-full rounded-md border-gray-300 border p-2 focus:ring-blue-500 focus:border-blue-500" required>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700">예산 항목</label>
+                        <select id="category" class="mt-1 block w-full rounded-md border-gray-300 border p-2 focus:ring-blue-500 focus:border-blue-500" required>
+                            <option value="수선유지비">수선유지비</option>
+                            <option value="비품">비품</option>
+                            <option value="개량공사">개량공사</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700">사용 금액 (원)</label>
+                        <input type="number" id="amount" placeholder="숫자만 입력" class="mt-1 block w-full rounded-md border-gray-300 border p-2 focus:ring-blue-500 focus:border-blue-500" required>
+                    </div>
+                    <button type="submit" class="w-full bg-blue-600 text-white font-bold py-2 px-4 rounded-md hover:bg-blue-700 transition-colors">
+                        기록 저장하기
+                    </button>
+                </form>
+            </div>
+
+            <div class="md:col-span-2 card p-6">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-bold">📂 최근 입력 내역</h2>
+                    <div class="space-x-2">
+                        <button onclick="fetchData()" class="text-xs text-blue-500 hover:underline">새로고침</button>
+                        <button onclick="clearData()" class="text-xs text-red-500 hover:underline">모든 데이터 초기화</button>
+                    </div>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">날짜</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">팀원</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">항목</th>
+                                <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">금액</th>
+                                <th class="px-4 py-3"></th>
+                            </tr>
+                        </thead>
+                        <tbody id="historyBody" class="bg-white divide-y divide-gray-200">
+                            <!-- JS dynamic content -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Section 2: Dashboard (Hidden by default) -->
+        <div id="section-dashboard" class="hidden space-y-8">
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div class="card p-6 bg-blue-50">
+                    <p class="text-sm text-blue-600 font-semibold">전체 누적 사용액</p>
+                    <h3 id="stat-total" class="text-3xl font-bold text-blue-900 mt-1">0원</h3>
+                </div>
+                <div class="card p-6 bg-green-50">
+                    <p class="text-sm text-green-600 font-semibold">이번 달 최대 사용 항목</p>
+                    <h3 id="stat-top-category" class="text-xl font-bold text-green-900 mt-1">-</h3>
+                </div>
+                <div class="card p-6 bg-purple-50">
+                    <p class="text-sm text-purple-600 font-semibold">데이터 건수</p>
+                    <h3 id="stat-count" class="text-3xl font-bold text-purple-900 mt-1">0건</h3>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                <div class="card p-6">
+                    <h2 class="text-lg font-bold mb-4">🏠 항목별 예산 분포</h2>
+                    <canvas id="categoryChart"></canvas>
+                </div>
+                <div class="card p-6">
+                    <h2 class="text-lg font-bold mb-4">👥 팀원별 누적 사용액</h2>
+                    <canvas id="memberChart"></canvas>
+                </div>
+            </div>
+
+            <div class="card p-6 overflow-x-auto">
+                <h2 class="text-lg font-bold mb-4">📅 월별/항목별 요약 테이블 (취합본)</h2>
+                <table class="min-w-full border-collapse border border-gray-200">
+                    <thead class="bg-gray-100">
+                        <tr>
+                            <th class="border border-gray-200 px-4 py-2">연월</th>
+                            <th class="border border-gray-200 px-4 py-2 text-blue-600">수선유지비</th>
+                            <th class="border border-gray-200 px-4 py-2 text-green-600">비품</th>
+                            <th class="border border-gray-200 px-4 py-2 text-purple-600">개량공사</th>
+                            <th class="border border-gray-200 px-4 py-2 bg-gray-200">합계</th>
+                        </tr>
+                    </thead>
+                    <tbody id="summaryTableBody" class="text-center">
+                        <!-- JS dynamic content -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Alert Modal Replacement -->
+    <div id="customAlert" class="fixed inset-0 bg-black bg-opacity-50 hidden flex items-center justify-center z-50">
+        <div class="bg-white p-6 rounded-lg shadow-xl max-w-sm w-full mx-4">
+            <h3 class="text-lg font-bold mb-2" id="alertTitle">알림</h3>
+            <p id="alertMsg" class="text-gray-600 mb-4"></p>
+            <button onclick="closeAlert()" class="w-full bg-blue-600 text-white py-2 rounded font-bold">확인</button>
+        </div>
+    </div>
+
+    <script>
+        // ==========================================
+        // ⚠️ 주의: 아래 SCRIPT_URL을 본인의 앱스 스크립트 웹앱 URL로 변경해야 합니다!
+        // ==========================================
+        const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwSTMKG-gqqRNXUqxhnU-Ktkyrmj391RUj1xbsK8bFzWsthKBWt60PKQbpWdz7HGLoI/exec'; 
+        
+        // State Management
+        let budgetData = []; // 초기값은 빈 배열, DB에서 로드
+        let categoryChart = null;
+        let memberChart = null;
+
+        // UI Helpers
+        function showLoading(text = '처리 중...') {
+            document.getElementById('loadingText').innerText = text;
+            document.getElementById('loadingOverlay').style.display = 'flex';
+        }
+
+        function hideLoading() {
+            document.getElementById('loadingOverlay').style.display = 'none';
+        }
+
+        // Custom Alert Controls
+        function showAlert(title, msg) {
+            document.getElementById('alertTitle').innerText = title;
+            document.getElementById('alertMsg').innerText = msg;
+            document.getElementById('customAlert').classList.remove('hidden');
+        }
+
+        function closeAlert() {
+            document.getElementById('customAlert').classList.add('hidden');
+        }
+
+        // Fetch data from Google Sheets API
+        async function fetchData() {
+            if (SCRIPT_URL === 'YOUR_GOOGLE_APPS_SCRIPT_WEB_APP_URL_HERE') {
+                showAlert('설정 오류', 'Google Apps Script URL이 설정되지 않았습니다. 코드에서 SCRIPT_URL을 변경해주세요.');
+                renderHistory();
+                return;
+            }
+
+            showLoading('데이터를 불러오는 중입니다...');
+            try {
+                const response = await fetch(SCRIPT_URL + "?action=read");
+                if (!response.ok) throw new Error('Network response was not ok');
+                const result = await response.json();
+                
+                if (result.status === 'success') {
+                    // 데이터 형식을 기존 앱에 맞게 변환
+                    budgetData = result.data.map(row => ({
+                        id: row.id || Date.now(), // id가 없으면 생성
+                        member: row.member,
+                        month: row.month,
+                        category: row.category,
+                        amount: parseInt(row.amount)
+                    }));
+                    renderHistory();
+                    if(document.getElementById('section-dashboard').classList.contains('hidden') === false) {
+                        updateDashboard();
+                    }
+                } else {
+                    showAlert('오류', '데이터를 불러오는데 실패했습니다: ' + result.message);
+                }
+            } catch (error) {
+                console.error('Error fetching data:', error);
+                showAlert('통신 오류', '서버와 통신 중 문제가 발생했습니다.');
+            } finally {
+                hideLoading();
+            }
+        }
+
+        // Tab Switching
+        function switchTab(tab) {
+            const sections = ['input', 'dashboard'];
+            sections.forEach(s => {
+                document.getElementById(`section-${s}`).classList.add('hidden');
+                document.getElementById(`tab-${s}`).classList.remove('tab-active');
+                document.getElementById(`tab-${s}`).classList.add('text-gray-500');
+            });
+            document.getElementById(`section-${tab}`).classList.remove('hidden');
+            document.getElementById(`tab-${tab}`).classList.add('tab-active');
+            document.getElementById(`tab-${tab}`).classList.remove('text-gray-500');
+
+            if(tab === 'dashboard') {
+                updateDashboard();
+            }
+        }
+
+        // Form Submission (Add Data via API)
+        document.getElementById('budgetForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            if (SCRIPT_URL === 'YOUR_GOOGLE_APPS_SCRIPT_WEB_APP_URL_HERE') {
+                showAlert('설정 오류', 'Google Apps Script URL이 설정되지 않았습니다.');
+                return;
+            }
+            
+            const newEntry = {
+                id: Date.now().toString(),
+                member: document.getElementById('member').value,
+                month: document.getElementById('month').value,
+                category: document.getElementById('category').value,
+                amount: document.getElementById('amount').value
+            };
+
+            showLoading('데이터를 저장하는 중입니다...');
+            
+            try {
+                // URLSearchParams를 사용하여 form 데이터 전송 (CORS 이슈 회피를 위해 POST 대신 GET 파라미터 또는 FormData 사용, 앱스 스크립트는 FormData를 POST로 받는 것이 안정적)
+                const formData = new FormData();
+                formData.append('action', 'insert');
+                formData.append('id', newEntry.id);
+                formData.append('member', newEntry.member);
+                formData.append('month', newEntry.month);
+                formData.append('category', newEntry.category);
+                formData.append('amount', newEntry.amount);
+
+                const response = await fetch(SCRIPT_URL, {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+
+                if(result.status === 'success') {
+                    // 성공 시 로컬 데이터 업데이트 및 UI 갱신
+                    newEntry.amount = parseInt(newEntry.amount); // 로컬에선 숫자로 저장
+                    budgetData.unshift(newEntry);
+                    renderHistory();
+                    this.reset();
+                    // 현재 달로 다시 세팅
+                    const now = new Date();
+                    document.getElementById('month').value = now.toISOString().substring(0, 7);
+                    showAlert('성공', '예산 데이터가 성공적으로 저장되었습니다.');
+                } else {
+                    showAlert('저장 실패', result.message);
+                }
+            } catch (error) {
+                console.error('Error saving data:', error);
+                showAlert('통신 오류', '데이터 저장 중 문제가 발생했습니다.');
+            } finally {
+                hideLoading();
+            }
+        });
+
+        async function deleteEntry(id) {
+            if(!confirm('이 내역을 삭제하시겠습니까?')) return;
+            
+            showLoading('삭제 중...');
+            try {
+                const formData = new FormData();
+                formData.append('action', 'delete');
+                formData.append('id', id);
+
+                const response = await fetch(SCRIPT_URL, {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+
+                if(result.status === 'success') {
+                    budgetData = budgetData.filter(item => item.id.toString() !== id.toString());
+                    renderHistory();
+                    showAlert('성공', '삭제되었습니다.');
+                } else {
+                    showAlert('삭제 실패', result.message);
+                }
+            } catch (error) {
+                console.error('Error deleting data:', error);
+                showAlert('통신 오류', '삭제 중 문제가 발생했습니다.');
+            } finally {
+                hideLoading();
+            }
+        }
+
+        async function clearData() {
+            if(confirm('정말로 모든 데이터를 삭제하시겠습니까? (이 작업은 DB에서도 즉시 삭제되며 되돌릴 수 없습니다.)')) {
+                showLoading('전체 데이터 삭제 중...');
+                try {
+                    const formData = new FormData();
+                    formData.append('action', 'clearAll');
+
+                    const response = await fetch(SCRIPT_URL, {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    const result = await response.json();
+
+                    if(result.status === 'success') {
+                        budgetData = [];
+                        renderHistory();
+                        showAlert('성공', '모든 데이터가 초기화되었습니다.');
+                    } else {
+                        showAlert('초기화 실패', result.message);
+                    }
+                } catch (error) {
+                    console.error('Error clearing data:', error);
+                    showAlert('통신 오류', '초기화 중 문제가 발생했습니다.');
+                } finally {
+                    hideLoading();
+                }
+            }
+        }
+
+        function renderHistory() {
+            const body = document.getElementById('historyBody');
+            body.innerHTML = budgetData.map(item => `
+                <tr class="hover:bg-gray-50 transition-colors">
+                    <td class="px-4 py-3 text-sm text-gray-600">${item.month}</td>
+                    <td class="px-4 py-3 text-sm font-semibold text-gray-800">${item.member}</td>
+                    <td class="px-4 py-3 text-sm">
+                        <span class="px-2 py-1 rounded-full text-xs font-medium 
+                            ${item.category === '수선유지비' ? 'bg-blue-100 text-blue-800' : 
+                              item.category === '비품' ? 'bg-green-100 text-green-800' : 'bg-purple-100 text-purple-800'}">
+                            ${item.category}
+                        </span>
+                    </td>
+                    <td class="px-4 py-3 text-sm text-right font-mono">${item.amount.toLocaleString()}원</td>
+                    <td class="px-4 py-3 text-right">
+                        <button onclick="deleteEntry('${item.id}')" class="text-red-400 hover:text-red-600">🗑️</button>
+                    </td>
+                </tr>
+            `).join('');
+            
+            if(budgetData.length === 0) {
+                body.innerHTML = `<tr><td colspan="5" class="py-10 text-center text-gray-400">등록된 데이터가 없습니다.</td></tr>`;
+            }
+        }
+
+        // Dashboard Logic
+        function updateDashboard() {
+            const total = budgetData.reduce((acc, curr) => acc + curr.amount, 0);
+            document.getElementById('stat-total').innerText = total.toLocaleString() + '원';
+            document.getElementById('stat-count').innerText = budgetData.length + '건';
+
+            // Category aggregation
+            const catMap = budgetData.reduce((acc, curr) => {
+                acc[curr.category] = (acc[curr.category] || 0) + curr.amount;
+                return acc;
+            }, {});
+            
+            const topCategory = Object.keys(catMap).reduce((a, b) => catMap[a] > catMap[b] ? a : b, '-');
+            document.getElementById('stat-top-category').innerText = topCategory !== '-' ? `${topCategory} (${catMap[topCategory].toLocaleString()}원)` : '-';
+
+            // Charts
+            renderCharts(catMap);
+            renderSummaryTable();
+        }
+
+        function renderCharts(catMap) {
+            const catCtx = document.getElementById('categoryChart').getContext('2d');
+            const memCtx = document.getElementById('memberChart').getContext('2d');
+
+            // Destroy existing charts if they exist
+            if(categoryChart) categoryChart.destroy();
+            if(memberChart) memberChart.destroy();
+
+            // Category Chart (Doughnut)
+            categoryChart = new Chart(catCtx, {
+                type: 'doughnut',
+                data: {
+                    labels: Object.keys(catMap),
+                    datasets: [{
+                        data: Object.values(catMap),
+                        backgroundColor: ['#3b82f6', '#10b981', '#8b5cf6'],
+                        borderWidth: 0
+                    }]
+                },
+                options: { responsive: true, cutout: '70%' }
+            });
+
+            // Member Chart (Bar)
+            const memMap = budgetData.reduce((acc, curr) => {
+                acc[curr.member] = (acc[curr.member] || 0) + curr.amount;
+                return acc;
+            }, {});
+
+            memberChart = new Chart(memCtx, {
+                type: 'bar',
+                data: {
+                    labels: Object.keys(memMap),
+                    datasets: [{
+                        label: '사용 금액',
+                        data: Object.values(memMap),
+                        backgroundColor: '#60a5fa'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: { y: { beginAtZero: true, grid: { display: false } } }
+                }
+            });
+        }
+
+        function renderSummaryTable() {
+            const tableBody = document.getElementById('summaryTableBody');
+            const monthlyData = {};
+
+            // Grouping data by month and category
+            budgetData.forEach(item => {
+                if(!monthlyData[item.month]) {
+                    monthlyData[item.month] = { '수선유지비': 0, '비품': 0, '개량공사': 0, total: 0 };
+                }
+                monthlyData[item.month][item.category] += item.amount;
+                monthlyData[item.month].total += item.amount;
+            });
+
+            // Sorting months descending
+            const sortedMonths = Object.keys(monthlyData).sort((a, b) => b.localeCompare(a));
+
+            tableBody.innerHTML = sortedMonths.map(month => {
+                const row = monthlyData[month];
+                return `
+                    <tr>
+                        <td class="border border-gray-200 px-4 py-2 font-semibold">${month}</td>
+                        <td class="border border-gray-200 px-4 py-2">${row['수선유지비'].toLocaleString()}</td>
+                        <td class="border border-gray-200 px-4 py-2">${row['비품'].toLocaleString()}</td>
+                        <td class="border border-gray-200 px-4 py-2">${row['개량공사'].toLocaleString()}</td>
+                        <td class="border border-gray-200 px-4 py-2 bg-gray-50 font-bold">${row.total.toLocaleString()}</td>
+                    </tr>
+                `;
+            }).join('');
+            
+            if(sortedMonths.length === 0) {
+                tableBody.innerHTML = `<tr><td colspan="5" class="p-4 text-gray-400">데이터가 없습니다.</td></tr>`;
+            }
+        }
+
+        // Custom Alert Controls
+        function showAlert(title, msg) {
+            document.getElementById('alertTitle').innerText = title;
+            document.getElementById('alertMsg').innerText = msg;
+            document.getElementById('customAlert').classList.remove('hidden');
+        }
+
+        function closeAlert() {
+            document.getElementById('customAlert').classList.add('hidden');
+        }
+
+        // Initial Load
+        window.onload = function() {
+            // Set current month as default
+            const now = new Date();
+            const monthStr = now.toISOString().substring(0, 7);
+            document.getElementById('month').value = monthStr;
+            
+            // 앱스 스크립트에서 데이터 불러오기
+            fetchData();
+        }
+    </script>
+</body>
+</html>
