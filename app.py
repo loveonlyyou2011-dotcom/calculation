@@ -171,11 +171,58 @@ with tab2:
         top_member = mem_agg.idxmax() if not mem_agg.empty else "-"
         top_mem_amount = mem_agg.max() if not mem_agg.empty else 0
 
-        # AI 데이터 분석 요약 기능
+        # 기본 데이터 분석 요약 기능
         st.success(f"💡 **데이터 분석 요약**\n\n"
                    f"현재까지 총 **{total_count}건**의 내역이 등록되었으며, 전체 누적 사용액은 **{int(total_amount):,}원**입니다. "
                    f"가장 많은 예산이 소요된 항목은 **{top_category}**({int(top_cat_amount):,}원)이며, "
                    f"누적 예산을 가장 많이 사용한 팀원은 **{top_member}**({int(top_mem_amount):,}원)입니다.")
+                   
+        # ✨ Gemini AI 연동 섹션 추가
+        st.markdown("### 🤖 AI 심층 요약 (Gemini)")
+        with st.expander("AI 요약 기능 사용하기 (API 키 필요)", expanded=False):
+            # 깃허브에 API키가 노출되지 않도록 입력창으로 받습니다.
+            api_key_input = st.text_input("Google Gemini API Key를 입력하세요", type="password")
+            
+            if st.button("✨ AI 요약하기"):
+                if not api_key_input:
+                    st.warning("API 키를 먼저 입력해주세요.")
+                else:
+                    with st.spinner("AI가 데이터를 분석하고 있습니다. 잠시만 기다려주세요... 🤖 (약 5~10초 소요)"):
+                        try:
+                            # 1. 데이터 단순화 (API로 전송할 핵심 데이터 추출)
+                            simplified_data = data_df[["month", "member", "category", "amount"]].rename(
+                                columns={"month": "월", "member": "팀원", "category": "항목", "amount": "금액"}
+                            ).to_dict(orient="records")
+                            
+                            prompt = f"다음은 우리 팀의 예산 사용 내역 데이터입니다. 이 데이터를 분석해서 지출 패턴, 비중, 트렌드 등 가장 눈에 띄는 특징이나 인사이트를 찾아주세요. 반드시 **딱 한 줄로 요약**해서 대답해야 합니다.\n\n데이터: {simplified_data}"
+                            
+                            # 2. REST API를 통해 Gemini 호출
+                            api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key_input}"
+                            payload = {
+                                "contents": [{"parts": [{"text": prompt}]}],
+                                "systemInstruction": {
+                                    "parts": [{"text": "당신은 전문적인 재무 데이터 분석가입니다. 주어진 예산 데이터를 분석하여 가장 핵심적인 특징을 통찰력 있고 명확하게 딱 한 줄로 요약해야 합니다."}]
+                                },
+                            }
+                            
+                            response = requests.post(api_url, json=payload, headers={'Content-Type': 'application/json'})
+                            result = response.json()
+                            
+                            # 3. 결과 파싱 및 출력
+                            if response.status_code == 200:
+                                ai_text = result.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+                                if ai_text:
+                                    st.info(f"✨ **AI 분석 결과:** {ai_text}")
+                                else:
+                                    st.error("AI 분석 결과를 불러오지 못했습니다.")
+                            else:
+                                error_msg = result.get("error", {}).get("message", "알 수 없는 오류")
+                                st.error(f"API 호출 실패: {error_msg}")
+                                
+                        except Exception as e:
+                            st.error(f"AI 분석 중 시스템 오류가 발생했습니다: {e}")
+
+        st.divider()
 
         m1, m2, m3 = st.columns(3)
         m1.metric("전체 누적 사용액", f"{int(total_amount):,}원")
