@@ -1,690 +1,286 @@
-<!DOCTYPE html>
-<html lang="ko">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>팀 예산 현황 및 취합 시스템</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Pretendard:wght@400;600;700&display=swap');
-        body { font-family: 'Pretendard', sans-serif; background-color: #f8fafc; }
-        .card { background: white; border-radius: 1rem; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }
-        .tab-active { border-bottom: 2px solid #2563eb; color: #2563eb; }
+from datetime import datetime
+import pandas as pd
+import plotly.express as px
+import requests
+import streamlit as st
+
+# --- 1. Page Configuration ---
+st.set_page_config(
+    page_title="팀 예산 관리 시스템",
+    page_icon="📊",
+    layout="wide",
+)
+
+# --- 2. Google Apps Script Web App URL ---
+GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbx3M_JahrsiBd0xHy9ExYaHaF5YcnDOZplHQKyCSjWW-6AZ-81DdTMQJXKwZUzk_iBgBw/exec"
+
+st.title("📊 팀 예산 관리 시스템")
+st.caption("부장님 보고용 월별 예산 취합 및 대시보드 (Google Apps Script API 연동)")
+
+# --- 3. 데이터 조회 및 추가 함수 ---
+@st.cache_data(ttl=5)
+def fetch_data_from_gas(url: str) -> pd.DataFrame:
+    """Google Apps Script API를 통해 구글 시트 데이터 로드"""
+    try:
+        response = requests.get(url, timeout=15, allow_redirects=True)
+        if response.status_code == 200:
+            data = response.json()
+            # 데이터 구조가 dict 안에 data 키로 있을 경우를 대비
+            if isinstance(data, dict) and "data" in data:
+                data = data["data"]
+            df = pd.DataFrame(data)
+
+            if not df.empty and "amount" in df.columns:
+                df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0)
+            return df
+        else:
+            st.error(f"데이터 로드 실패 (Status Code: {response.status_code})")
+            return pd.DataFrame(
+                columns=["timestamp", "month", "member", "category", "amount"]
+            )
+    except Exception as e:
+        st.error(f"Apps Script 연결 오류: {e}")
+        return pd.DataFrame(
+            columns=["timestamp", "month", "member", "category", "amount"]
+        )
+
+def append_data_to_gas(url: str, payload: dict) -> bool:
+    """Google Apps Script API를 통해 구글 시트에 신규 데이터 저장"""
+    try:
+        response = requests.post(url, json=payload, timeout=15, allow_redirects=True)
+        if response.status_code == 200:
+            res_json = response.json()
+            return res_json.get("status") == "success"
+        return False
+    except Exception as e:
+        st.error(f"데이터 저장 중 에러 발생: {e}")
+        return False
+
+# --- 4. App State (팀원 목록 관리) ---
+if "custom_members" not in st.session_state:
+    st.session_state.custom_members = []
+
+# 데이터 사전 로드 (동적 팀원 목록 추출용)
+data_df = fetch_data_from_gas(GAS_WEB_APP_URL)
+
+existing_members = data_df["member"].dropna().unique().tolist() if not data_df.empty and "member" in data_df.columns else []
+default_members = ["부장님", "팀원1", "팀원2", "팀원3", "팀원4"]
+
+# 기존 멤버, 기본 멤버, 세션에서 추가된 멤버 병합 후 정렬
+all_members = list(set(default_members + existing_members + st.session_state.custom_members))
+all_members = sorted([m for m in all_members if str(m).strip()])
+member_options = ["선택하세요"] + all_members
+
+# --- 5. App Layout (Tabs) ---
+tab1, tab2 = st.tabs(["📝 데이터 입력", "📈 전체 대시보드"])
+
+# --- TAB 1: 데이터 입력 ---
+with tab1:
+    col1, col2 = st.columns([1, 2])
+
+    with col1:
+        st.subheader("내역 입력")
         
-        /* 로딩 오버레이 스타일 */
-        #loadingOverlay {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(255, 255, 255, 0.8);
-            z-index: 100;
-            justify-content: center;
-            align-items: center;
-            flex-direction: column;
-        }
-        .spinner {
-            border: 4px solid rgba(0, 0, 0, 0.1);
-            width: 50px;
-            height: 50px;
-            border-radius: 50%;
-            border-left-color: #2563eb;
-            animation: spin 1s linear infinite;
-        }
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-    </style>
-</head>
-<body class="p-4 md:p-8 relative">
+        # 팀원 추가 UI
+        with st.expander("➕ 새 팀원 추가하기"):
+            new_member = st.text_input("추가할 팀원 이름", key="new_mem_input")
+            if st.button("목록에 추가"):
+                if new_member and new_member not in st.session_state.custom_members and new_member not in all_members:
+                    st.session_state.custom_members.append(new_member)
+                    st.success(f"'{new_member}' 팀원이 추가되었습니다.")
+                    st.rerun()
+                elif new_member in all_members:
+                    st.warning("이미 존재하는 팀원입니다.")
 
-    <!-- 로딩 오버레이 -->
-    <div id="loadingOverlay">
-        <div class="spinner mb-4"></div>
-        <p class="text-gray-700 font-semibold" id="loadingText">데이터를 불러오는 중입니다...</p>
-    </div>
-
-    <div class="max-w-6xl mx-auto">
-        <header class="mb-8 text-center">
-            <h1 class="text-3xl font-bold text-gray-800">📊 팀 예산 관리 시스템</h1>
-            <p class="text-gray-500 mt-2">부장님 보고용 월별 예산 취합 및 대시보드</p>
-        </header>
-
-        <div class="flex border-b border-gray-200 mb-8">
-            <button onclick="switchTab('input')" id="tab-input" class="px-6 py-2 font-semibold transition-colors tab-active">데이터 입력</button>
-            <button onclick="switchTab('dashboard')" id="tab-dashboard" class="px-6 py-2 font-semibold text-gray-500 hover:text-blue-600 transition-colors">전체 대시보드</button>
-        </div>
-
-        <!-- Section 1: Input Form -->
-        <div id="section-input" class="grid grid-cols-1 md:grid-cols-3 gap-8">
-            <div class="md:col-span-1 card p-6">
-                <h2 class="text-xl font-bold mb-4 flex items-center">
-                    <span class="mr-2">📝</span> 내역 입력
-                </h2>
-                <form id="budgetForm" class="space-y-4">
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700">팀원 선택</label>
-                        <div class="flex mt-1">
-                            <select id="member" class="block w-full rounded-l-md border-gray-300 border p-2 focus:ring-blue-500 focus:border-blue-500" required>
-                                <option value="">팀원을 선택하세요</option>
-                                <!-- JS dynamic options -->
-                            </select>
-                            <button type="button" onclick="openAddMemberPrompt()" class="bg-gray-100 text-gray-700 px-4 rounded-r-md border border-l-0 border-gray-300 hover:bg-gray-200 transition-colors whitespace-nowrap">
-                                + 추가
-                            </button>
-                        </div>
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700">해당 월</label>
-                        <input type="month" id="month" class="mt-1 block w-full rounded-md border-gray-300 border p-2 focus:ring-blue-500 focus:border-blue-500" required>
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700">예산 항목</label>
-                        <select id="category" class="mt-1 block w-full rounded-md border-gray-300 border p-2 focus:ring-blue-500 focus:border-blue-500" required>
-                            <option value="수선유지비">수선유지비</option>
-                            <option value="비품">비품</option>
-                            <option value="개량공사">개량공사</option>
-                        </select>
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700">사용 금액 (원)</label>
-                        <input type="number" id="amount" placeholder="숫자만 입력" class="mt-1 block w-full rounded-md border-gray-300 border p-2 focus:ring-blue-500 focus:border-blue-500" required>
-                    </div>
-                    <button type="submit" class="w-full bg-blue-600 text-white font-bold py-2 px-4 rounded-md hover:bg-blue-700 transition-colors">
-                        기록 저장하기
-                    </button>
-                </form>
-            </div>
-
-            <div class="md:col-span-2 card p-6">
-                <div class="flex justify-between items-center mb-4">
-                    <h2 class="text-xl font-bold">📂 최근 입력 내역</h2>
-                    <div class="space-x-2">
-                        <button onclick="fetchData()" class="text-xs text-blue-500 hover:underline">새로고침</button>
-                        <button onclick="requestClearData()" class="text-xs text-red-500 hover:underline">모든 데이터 초기화</button>
-                    </div>
-                </div>
-                <div class="overflow-x-auto">
-                    <table class="min-w-full divide-y divide-gray-200">
-                        <thead class="bg-gray-50">
-                            <tr>
-                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">날짜</th>
-                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">팀원</th>
-                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">항목</th>
-                                <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">금액</th>
-                                <th class="px-4 py-3"></th>
-                            </tr>
-                        </thead>
-                        <tbody id="historyBody" class="bg-white divide-y divide-gray-200">
-                            <!-- JS dynamic content -->
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-
-        <!-- Section 2: Dashboard (Hidden by default) -->
-        <div id="section-dashboard" class="hidden space-y-8">
+        # 메인 폼
+        with st.form("budget_form", clear_on_submit=True):
+            member = st.selectbox("팀원 선택", member_options)
             
-            <!-- AI 요약 섹션 -->
-            <div class="card p-6 bg-yellow-50 border-l-4 border-yellow-400">
-                <div class="flex justify-between items-center mb-2">
-                    <h2 class="text-lg font-bold flex items-center">
-                        <span class="mr-2">💡</span> 데이터 분석 요약
-                    </h2>
-                    <button onclick="analyzeDataWithAI()" class="bg-yellow-500 hover:bg-yellow-600 text-white px-4 py-2 rounded text-sm font-bold shadow transition-colors flex items-center">
-                        <span class="mr-1">✨</span> AI 요약하기
-                    </button>
-                </div>
-                <p id="dashboard-summary" class="text-gray-700 leading-relaxed">
-                    데이터를 분석 중입니다...
-                </p>
-                <div id="ai-insight-container" class="hidden mt-4 p-4 bg-white rounded border border-yellow-200 shadow-inner">
-                    <p id="ai-insight-text" class="text-blue-800 font-bold text-lg"></p>
-                </div>
-            </div>
+            current_month = datetime.now().strftime("%Y-%m")
+            month = st.text_input("해당 월 (YYYY-MM)", value=current_month, max_chars=7)
 
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <div class="card p-6 bg-blue-50">
-                    <p class="text-sm text-blue-600 font-semibold">전체 누적 사용액</p>
-                    <h3 id="stat-total" class="text-3xl font-bold text-blue-900 mt-1">0원</h3>
-                </div>
-                <div class="card p-6 bg-green-50">
-                    <p class="text-sm text-green-600 font-semibold">이번 달 최대 사용 항목</p>
-                    <h3 id="stat-top-category" class="text-xl font-bold text-green-900 mt-1">-</h3>
-                </div>
-                <div class="card p-6 bg-purple-50">
-                    <p class="text-sm text-purple-600 font-semibold">데이터 건수</p>
-                    <h3 id="stat-count" class="text-3xl font-bold text-purple-900 mt-1">0건</h3>
-                </div>
-            </div>
+            category = st.selectbox("예산 항목", ["수선유지비", "비품", "개량공사"])
+            amount = st.number_input("사용 금액 (원)", min_value=0, step=1000, value=0)
 
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
-                <div class="card p-6">
-                    <h2 class="text-lg font-bold mb-4">🏠 항목별 예산 분포</h2>
-                    <canvas id="categoryChart"></canvas>
-                </div>
-                <div class="card p-6">
-                    <h2 class="text-lg font-bold mb-4">👥 팀원별 누적 사용액</h2>
-                    <canvas id="memberChart"></canvas>
-                </div>
-            </div>
+            submitted = st.form_submit_button("기록 저장하기")
 
-            <div class="card p-6 overflow-x-auto">
-                <h2 class="text-lg font-bold mb-4">📅 월별/항목별 요약 테이블 (취합본)</h2>
-                <table class="min-w-full border-collapse border border-gray-200">
-                    <thead class="bg-gray-100">
-                        <tr>
-                            <th class="border border-gray-200 px-4 py-2">연월</th>
-                            <th class="border border-gray-200 px-4 py-2 text-blue-600">수선유지비</th>
-                            <th class="border border-gray-200 px-4 py-2 text-green-600">비품</th>
-                            <th class="border border-gray-200 px-4 py-2 text-purple-600">개량공사</th>
-                            <th class="border border-gray-200 px-4 py-2 bg-gray-200">합계</th>
-                        </tr>
-                    </thead>
-                    <tbody id="summaryTableBody" class="text-center">
-                        <!-- JS dynamic content -->
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </div>
-
-    <!-- Alert Modal -->
-    <div id="customAlert" class="fixed inset-0 bg-black bg-opacity-50 hidden flex items-center justify-center z-50">
-        <div class="bg-white p-6 rounded-lg shadow-xl max-w-sm w-full mx-4">
-            <h3 class="text-lg font-bold mb-2" id="alertTitle">알림</h3>
-            <p id="alertMsg" class="text-gray-600 mb-4"></p>
-            <button onclick="closeAlert()" class="w-full bg-blue-600 text-white py-2 rounded font-bold">확인</button>
-        </div>
-    </div>
-
-    <!-- Confirm Modal -->
-    <div id="customConfirm" class="fixed inset-0 bg-black bg-opacity-50 hidden flex items-center justify-center z-50">
-        <div class="bg-white p-6 rounded-lg shadow-xl max-w-sm w-full mx-4">
-            <h3 class="text-lg font-bold mb-2 text-red-600">확인 요청</h3>
-            <p id="confirmMsg" class="text-gray-600 mb-4"></p>
-            <div class="flex space-x-2">
-                <button onclick="closeConfirm()" class="w-1/2 bg-gray-200 text-gray-800 py-2 rounded font-bold hover:bg-gray-300 transition-colors">취소</button>
-                <button id="confirmBtn" class="w-1/2 bg-red-600 text-white py-2 rounded font-bold hover:bg-red-700 transition-colors">확인</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Prompt Modal (Add Member) -->
-    <div id="customPrompt" class="fixed inset-0 bg-black bg-opacity-50 hidden flex items-center justify-center z-50">
-        <div class="bg-white p-6 rounded-lg shadow-xl max-w-sm w-full mx-4">
-            <h3 class="text-lg font-bold mb-2">➕ 새 팀원 추가</h3>
-            <p class="text-sm text-gray-500 mb-2">추가할 팀원의 이름을 입력해주세요.</p>
-            <input type="text" id="promptInput" class="w-full border border-gray-300 rounded p-2 mb-4 focus:ring-blue-500 focus:border-blue-500" placeholder="예: 팀원5">
-            <div class="flex space-x-2">
-                <button onclick="closePrompt()" class="w-1/2 bg-gray-200 text-gray-800 py-2 rounded font-bold hover:bg-gray-300 transition-colors">취소</button>
-                <button onclick="submitAddMember()" class="w-1/2 bg-blue-600 text-white py-2 rounded font-bold hover:bg-blue-700 transition-colors">추가</button>
-            </div>
-        </div>
-    </div>
-
-    <script>
-        // ==========================================
-        // ⚠️ 주의: 아래 SCRIPT_URL을 본인의 앱스 스크립트 웹앱 URL로 변경해야 합니다!
-        // ==========================================
-        const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwSTMKG-gqqRNXUqxhnU-Ktkyrmj391RUj1xbsK8bFzWsthKBWt60PKQbpWdz7HGLoI/exec'; 
-        
-        // State Management
-        let budgetData = []; // DB에서 로드
-        let teamMembers = JSON.parse(localStorage.getItem('teamMembers')) || ["부장님", "팀원1", "팀원2", "팀원3", "팀원4"];
-        let categoryChart = null;
-        let memberChart = null;
-        let pendingConfirmAction = null;
-
-        // UI Helpers
-        function showLoading(text = '처리 중...') {
-            document.getElementById('loadingText').innerText = text;
-            document.getElementById('loadingOverlay').style.display = 'flex';
-        }
-        function hideLoading() {
-            document.getElementById('loadingOverlay').style.display = 'none';
-        }
-
-        // Custom Modals Controls
-        function showAlert(title, msg) {
-            document.getElementById('alertTitle').innerText = title;
-            document.getElementById('alertMsg').innerText = msg;
-            document.getElementById('customAlert').classList.remove('hidden');
-        }
-        function closeAlert() {
-            document.getElementById('customAlert').classList.add('hidden');
-        }
-
-        function showConfirm(msg, onConfirm) {
-            document.getElementById('confirmMsg').innerText = msg;
-            pendingConfirmAction = onConfirm;
-            document.getElementById('customConfirm').classList.remove('hidden');
-        }
-        function closeConfirm() {
-            document.getElementById('customConfirm').classList.add('hidden');
-            pendingConfirmAction = null;
-        }
-        document.getElementById('confirmBtn').addEventListener('click', () => {
-            if (pendingConfirmAction) pendingConfirmAction();
-            closeConfirm();
-        });
-
-        // Add Member Prompt Logic
-        function renderTeamMembers() {
-            const select = document.getElementById('member');
-            select.innerHTML = '<option value="">팀원을 선택하세요</option>' + 
-                teamMembers.map(m => `<option value="${m}">${m}</option>`).join('');
-        }
-
-        function openAddMemberPrompt() {
-            document.getElementById('promptInput').value = '';
-            document.getElementById('customPrompt').classList.remove('hidden');
-            document.getElementById('promptInput').focus();
-        }
-        function closePrompt() {
-            document.getElementById('customPrompt').classList.add('hidden');
-        }
-        function submitAddMember() {
-            const newMember = document.getElementById('promptInput').value.trim();
-            if (newMember !== "") {
-                if (!teamMembers.includes(newMember)) {
-                    teamMembers.push(newMember);
-                    localStorage.setItem('teamMembers', JSON.stringify(teamMembers));
-                    renderTeamMembers();
-                    closePrompt();
-                    showAlert('성공', `'${newMember}' 팀원이 목록에 추가되었습니다.`);
-                    document.getElementById('member').value = newMember; // 자동 선택
-                } else {
-                    showAlert('알림', '이미 존재하는 팀원입니다.');
-                }
-            }
-        }
-
-        // Fetch data from Google Sheets API
-        async function fetchData() {
-            if (SCRIPT_URL === 'YOUR_GOOGLE_APPS_SCRIPT_WEB_APP_URL_HERE') {
-                showAlert('설정 오류', 'Google Apps Script URL이 설정되지 않았습니다.');
-                renderHistory();
-                return;
-            }
-
-            showLoading('데이터를 불러오는 중입니다...');
-            try {
-                const response = await fetch(SCRIPT_URL + "?action=read");
-                if (!response.ok) throw new Error('Network response was not ok');
-                const result = await response.json();
-                
-                if (result.status === 'success') {
-                    budgetData = result.data.map(row => ({
-                        id: row.id || Date.now(),
-                        member: row.member,
-                        month: row.month,
-                        category: row.category,
-                        amount: parseInt(row.amount)
-                    }));
-
-                    // 데이터에 존재하는 멤버 자동 추가
-                    budgetData.forEach(item => {
-                        if (item.member && !teamMembers.includes(item.member)) {
-                            teamMembers.push(item.member);
-                        }
-                    });
-                    localStorage.setItem('teamMembers', JSON.stringify(teamMembers));
-                    renderTeamMembers();
-
-                    renderHistory();
-                    if(document.getElementById('section-dashboard').classList.contains('hidden') === false) {
-                        updateDashboard();
+            if submitted:
+                if member == "선택하세요":
+                    st.error("팀원을 선택해 주세요.")
+                elif amount <= 0:
+                    st.error("사용 금액을 0원 이상 입력해 주세요.")
+                else:
+                    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    payload = {
+                        "timestamp": timestamp,
+                        "month": month,
+                        "member": member,
+                        "category": category,
+                        "amount": amount,
                     }
-                } else {
-                    showAlert('오류', '데이터를 불러오는데 실패했습니다: ' + result.message);
-                }
-            } catch (error) {
-                console.error('Error fetching data:', error);
-                showAlert('통신 오류', '서버와 통신 중 문제가 발생했습니다.');
-            } finally {
-                hideLoading();
-            }
-        }
 
-        // Tab Switching
-        function switchTab(tab) {
-            const sections = ['input', 'dashboard'];
-            sections.forEach(s => {
-                document.getElementById(`section-${s}`).classList.add('hidden');
-                document.getElementById(`tab-${s}`).classList.remove('tab-active');
-                document.getElementById(`tab-${s}`).classList.add('text-gray-500');
-            });
-            document.getElementById(`section-${tab}`).classList.remove('hidden');
-            document.getElementById(`tab-${tab}`).classList.add('tab-active');
-            document.getElementById(`tab-${tab}`).classList.remove('text-gray-500');
+                    with st.spinner("구글 시트에 저장 중입니다..."):
+                        success = append_data_to_gas(GAS_WEB_APP_URL, payload)
 
-            if(tab === 'dashboard') {
-                updateDashboard();
-            }
-        }
+                    if success:
+                        st.success("구글 시트에 성공적으로 저장되었습니다!")
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.error("❌ 저장에 실패했습니다. (Apps Script 권한 및 코드를 확인해주세요)")
 
-        // Form Submission (Add Data via API)
-        document.getElementById('budgetForm').addEventListener('submit', async function(e) {
-            e.preventDefault();
-            
-            const newEntry = {
-                id: Date.now().toString(),
-                member: document.getElementById('member').value,
-                month: document.getElementById('month').value,
-                category: document.getElementById('category').value,
-                amount: document.getElementById('amount').value
-            };
+    with col2:
+        st.subheader("📂 최근 입력 내역")
 
-            showLoading('데이터를 저장하는 중입니다...');
-            
-            try {
-                const formData = new FormData();
-                formData.append('action', 'insert');
-                formData.append('id', newEntry.id);
-                formData.append('member', newEntry.member);
-                formData.append('month', newEntry.month);
-                formData.append('category', newEntry.category);
-                formData.append('amount', newEntry.amount);
+        if not data_df.empty and "timestamp" in data_df.columns:
+            display_df = data_df.sort_values(by="timestamp", ascending=False).copy()
+            if "amount" in display_df.columns:
+                display_df["amount_formatted"] = display_df["amount"].apply(
+                    lambda x: f"{int(x):,}원"
+                )
 
-                const response = await fetch(SCRIPT_URL, {
-                    method: 'POST',
-                    body: formData
-                });
-                
-                const result = await response.json();
+                cols_to_show = ["month", "member", "category", "amount_formatted"]
+                existing_cols = [c for c in cols_to_show if c in display_df.columns]
 
-                if(result.status === 'success') {
-                    newEntry.amount = parseInt(newEntry.amount);
-                    budgetData.unshift(newEntry);
-                    renderHistory();
-                    this.reset();
-                    
-                    const now = new Date();
-                    document.getElementById('month').value = now.toISOString().substring(0, 7);
-                    showAlert('성공', '예산 데이터가 성공적으로 저장되었습니다.');
-                } else {
-                    showAlert('저장 실패', result.message);
-                }
-            } catch (error) {
-                console.error('Error saving data:', error);
-                showAlert('통신 오류', '데이터 저장 중 문제가 발생했습니다.');
-            } finally {
-                hideLoading();
-            }
-        });
+                st.dataframe(
+                    display_df[existing_cols].rename(
+                        columns={
+                            "month": "월",
+                            "member": "팀원",
+                            "category": "항목",
+                            "amount_formatted": "금액",
+                        }
+                    ),
+                    use_container_width=True,
+                    height=400,
+                )
+        else:
+            st.info("현재 저장된 데이터가 없거나 로드 중입니다.")
 
-        function requestDeleteEntry(id) {
-            showConfirm('이 내역을 삭제하시겠습니까?', () => executeDeleteEntry(id));
-        }
+# --- TAB 2: 전체 대시보드 ---
+with tab2:
+    if not data_df.empty and "amount" in data_df.columns:
+        total_amount = data_df["amount"].sum()
+        total_count = len(data_df)
 
-        async function executeDeleteEntry(id) {
-            showLoading('삭제 중...');
-            try {
-                const formData = new FormData();
-                formData.append('action', 'delete');
-                formData.append('id', id);
+        cat_agg = data_df.groupby("category")["amount"].sum()
+        top_category = cat_agg.idxmax() if not cat_agg.empty else "-"
+        top_cat_amount = cat_agg.max() if not cat_agg.empty else 0
+        
+        mem_agg = data_df.groupby("member")["amount"].sum()
+        top_member = mem_agg.idxmax() if not mem_agg.empty else "-"
+        top_mem_amount = mem_agg.max() if not mem_agg.empty else 0
 
-                const response = await fetch(SCRIPT_URL, {
-                    method: 'POST',
-                    body: formData
-                });
-                
-                const result = await response.json();
+        # 기본 데이터 분석 요약 기능
+        st.success(f"💡 **데이터 분석 요약**\n\n"
+                   f"현재까지 총 **{total_count}건**의 내역이 등록되었으며, 전체 누적 사용액은 **{int(total_amount):,}원**입니다. "
+                   f"가장 많은 예산이 소요된 항목은 **{top_category}**({int(top_cat_amount):,}원)이며, "
+                   f"누적 예산을 가장 많이 사용한 팀원은 **{top_member}**({int(top_mem_amount):,}원)입니다.")
+                   
+        # ✨ Gemini AI 연동 섹션 추가
+        st.markdown("### 🤖 AI 심층 요약 (Gemini)")
+        
+        # Streamlit Secrets에서 API 키 가져오기
+        try:
+            api_key = st.secrets["GEMINI_API_KEY"]
+        except (KeyError, FileNotFoundError):
+            api_key = None
 
-                if(result.status === 'success') {
-                    budgetData = budgetData.filter(item => item.id.toString() !== id.toString());
-                    renderHistory();
-                    showAlert('성공', '삭제되었습니다.');
-                } else {
-                    showAlert('삭제 실패', result.message);
-                }
-            } catch (error) {
-                console.error('Error deleting data:', error);
-                showAlert('통신 오류', '삭제 중 문제가 발생했습니다.');
-            } finally {
-                hideLoading();
-            }
-        }
+        if not api_key:
+            st.warning("⚠️ Streamlit Secrets에 API 키가 설정되지 않았습니다. 앱 설정(Settings) -> Secrets에서 'GEMINI_API_KEY'를 추가해주세요.")
+        else:
+            if st.button("✨ AI 요약하기"):
+                with st.spinner("AI가 데이터를 분석하고 있습니다. 잠시만 기다려주세요... 🤖 (약 5~10초 소요)"):
+                    try:
+                        # 1. 데이터 단순화 (API로 전송할 핵심 데이터 추출)
+                        simplified_data = data_df[["month", "member", "category", "amount"]].rename(
+                            columns={"month": "월", "member": "팀원", "category": "항목", "amount": "금액"}
+                        ).to_dict(orient="records")
+                        
+                        prompt = f"다음은 우리 팀의 예산 사용 내역 데이터입니다. 이 데이터를 분석해서 지출 패턴, 비중, 트렌드 등 가장 눈에 띄는 특징이나 인사이트를 찾아주세요. 반드시 **딱 한 줄로 요약**해서 대답해야 합니다.\n\n데이터: {simplified_data}"
+                        
+                        # 2. REST API를 통해 Gemini 호출 (모델명 gemini-1.5-flash-latest 로 변경)
+                        api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={api_key}"
+                        payload = {
+                            "contents": [{"parts": [{"text": prompt}]}],
+                            "systemInstruction": {
+                                "parts": [{"text": "당신은 전문적인 재무 데이터 분석가입니다. 주어진 예산 데이터를 분석하여 가장 핵심적인 특징을 통찰력 있고 명확하게 딱 한 줄로 요약해야 합니다."}]
+                            },
+                        }
+                        
+                        response = requests.post(api_url, json=payload, headers={'Content-Type': 'application/json'})
+                        result = response.json()
+                        
+                        # 3. 결과 파싱 및 출력
+                        if response.status_code == 200:
+                            ai_text = result.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+                            if ai_text:
+                                st.info(f"✨ **AI 분석 결과:** {ai_text}")
+                            else:
+                                st.error("AI 분석 결과를 불러오지 못했습니다.")
+                        else:
+                            error_msg = result.get("error", {}).get("message", "알 수 없는 오류")
+                            st.error(f"API 호출 실패: {error_msg}")
+                            
+                    except Exception as e:
+                        st.error(f"AI 분석 중 시스템 오류가 발생했습니다: {e}")
 
-        function requestClearData() {
-            showConfirm('정말로 모든 데이터를 삭제하시겠습니까?\n(이 작업은 DB에서도 즉시 삭제되며 되돌릴 수 없습니다.)', executeClearData);
-        }
+        st.divider()
 
-        async function executeClearData() {
-            showLoading('전체 데이터 삭제 중...');
-            try {
-                const formData = new FormData();
-                formData.append('action', 'clearAll');
+        m1, m2, m3 = st.columns(3)
+        m1.metric("전체 누적 사용액", f"{int(total_amount):,}원")
+        m2.metric("최대 사용 항목", f"{top_category}", f"{int(top_cat_amount):,}원")
+        m3.metric("데이터 건수", f"{total_count}건")
 
-                const response = await fetch(SCRIPT_URL, {
-                    method: 'POST',
-                    body: formData
-                });
-                
-                const result = await response.json();
+        st.divider()
 
-                if(result.status === 'success') {
-                    budgetData = [];
-                    renderHistory();
-                    showAlert('성공', '모든 데이터가 초기화되었습니다.');
-                } else {
-                    showAlert('초기화 실패', result.message);
-                }
-            } catch (error) {
-                console.error('Error clearing data:', error);
-                showAlert('통신 오류', '초기화 중 문제가 발생했습니다.');
-            } finally {
-                hideLoading();
-            }
-        }
+        c1, c2 = st.columns(2)
 
-        function renderHistory() {
-            const body = document.getElementById('historyBody');
-            body.innerHTML = budgetData.map(item => `
-                <tr class="hover:bg-gray-50 transition-colors">
-                    <td class="px-4 py-3 text-sm text-gray-600">${item.month}</td>
-                    <td class="px-4 py-3 text-sm font-semibold text-gray-800">${item.member}</td>
-                    <td class="px-4 py-3 text-sm">
-                        <span class="px-2 py-1 rounded-full text-xs font-medium 
-                            ${item.category === '수선유지비' ? 'bg-blue-100 text-blue-800' : 
-                              item.category === '비품' ? 'bg-green-100 text-green-800' : 'bg-purple-100 text-purple-800'}">
-                            ${item.category}
-                        </span>
-                    </td>
-                    <td class="px-4 py-3 text-sm text-right font-mono">${item.amount.toLocaleString()}원</td>
-                    <td class="px-4 py-3 text-right">
-                        <button onclick="requestDeleteEntry('${item.id}')" class="text-red-400 hover:text-red-600">🗑️</button>
-                    </td>
-                </tr>
-            `).join('');
-            
-            if(budgetData.length === 0) {
-                body.innerHTML = `<tr><td colspan="5" class="py-10 text-center text-gray-400">등록된 데이터가 없습니다.</td></tr>`;
-            }
-        }
+        with c1:
+            st.subheader("🏠 항목별 예산 분포")
+            fig_pie = px.pie(
+                data_df,
+                names="category",
+                values="amount",
+                hole=0.5,
+                color_discrete_sequence=px.colors.qualitative.Pastel,
+            )
+            fig_pie.update_traces(textinfo="percent+label")
+            st.plotly_chart(fig_pie, use_container_width=True)
 
-        // Dashboard Logic
-        function generateAISummary(total, count, catMap, memMap) {
-            if (count === 0) return "현재 등록된 예산 데이터가 없어 분석이 불가능합니다.";
-            
-            const topCat = Object.keys(catMap).length > 0 ? Object.keys(catMap).reduce((a, b) => catMap[a] > catMap[b] ? a : b) : '-';
-            const topMem = Object.keys(memMap).length > 0 ? Object.keys(memMap).reduce((a, b) => memMap[a] > memMap[b] ? a : b) : '-';
-            
-            return `현재까지 총 <strong>${count}건</strong>의 내역이 등록되었으며, 누적 사용액은 <strong>${total.toLocaleString()}원</strong>입니다.<br/>
-                    전체 기간 동안 가장 지출이 많은 항목은 <strong>${topCat}</strong>(${catMap[topCat]?.toLocaleString() || 0}원)이며, 
-                    누적 예산을 가장 많이 사용한 팀원은 <strong>${topMem}</strong>(${memMap[topMem]?.toLocaleString() || 0}원)입니다.`;
-        }
+        with c2:
+            st.subheader("👥 팀원별 누적 사용액")
+            member_agg_df = mem_agg.reset_index()
+            fig_bar = px.bar(
+                member_agg_df,
+                x="member",
+                y="amount",
+                labels={"member": "팀원", "amount": "사용 금액(원)"},
+                color_discrete_sequence=["#60a5fa"],
+            )
+            st.plotly_chart(fig_bar, use_container_width=True)
 
-        function updateDashboard() {
-            const total = budgetData.reduce((acc, curr) => acc + curr.amount, 0);
-            document.getElementById('stat-total').innerText = total.toLocaleString() + '원';
-            document.getElementById('stat-count').innerText = budgetData.length + '건';
+        st.divider()
 
-            // Category aggregation
-            const catMap = budgetData.reduce((acc, curr) => {
-                acc[curr.category] = (acc[curr.category] || 0) + curr.amount;
-                return acc;
-            }, {});
-            
-            // Member aggregation
-            const memMap = budgetData.reduce((acc, curr) => {
-                acc[curr.member] = (acc[curr.member] || 0) + curr.amount;
-                return acc;
-            }, {});
-            
-            const topCategory = Object.keys(catMap).length > 0 ? Object.keys(catMap).reduce((a, b) => catMap[a] > catMap[b] ? a : b) : '-';
-            document.getElementById('stat-top-category').innerText = topCategory !== '-' ? `${topCategory} (${catMap[topCategory].toLocaleString()}원)` : '-';
+        st.subheader("📅 월별/항목별 요약 테이블 (취합본)")
+        pivot_df = data_df.pivot_table(
+            index="month",
+            columns="category",
+            values="amount",
+            aggfunc="sum",
+            fill_value=0,
+        )
 
-            // Update AI Summary Text
-            document.getElementById('dashboard-summary').innerHTML = generateAISummary(total, budgetData.length, catMap, memMap);
-            
-            // 데이터가 갱신될 때마다 기존 AI 인사이트 창은 숨김 (최신화 유도)
-            document.getElementById('ai-insight-container').classList.add('hidden');
+        for cat in ["수선유지비", "비품", "개량공사"]:
+            if cat not in pivot_df.columns:
+                pivot_df[cat] = 0
 
-            // Charts
-            renderCharts(catMap, memMap);
-            renderSummaryTable();
-        }
+        pivot_df = pivot_df[["수선유지비", "비품", "개량공사"]]
+        pivot_df["합계"] = pivot_df.sum(axis=1)
+        pivot_df = pivot_df.sort_index(ascending=False)
 
-        function renderCharts(catMap, memMap) {
-            const catCtx = document.getElementById('categoryChart').getContext('2d');
-            const memCtx = document.getElementById('memberChart').getContext('2d');
+        formatted_pivot = pivot_df.map(lambda x: f"{int(x):,}원")
+        st.dataframe(formatted_pivot, use_container_width=True)
 
-            if(categoryChart) categoryChart.destroy();
-            if(memberChart) memberChart.destroy();
-
-            categoryChart = new Chart(catCtx, {
-                type: 'doughnut',
-                data: {
-                    labels: Object.keys(catMap),
-                    datasets: [{
-                        data: Object.values(catMap),
-                        backgroundColor: ['#3b82f6', '#10b981', '#8b5cf6'],
-                        borderWidth: 0
-                    }]
-                },
-                options: { responsive: true, cutout: '70%' }
-            });
-
-            memberChart = new Chart(memCtx, {
-                type: 'bar',
-                data: {
-                    labels: Object.keys(memMap),
-                    datasets: [{
-                        label: '사용 금액',
-                        data: Object.values(memMap),
-                        backgroundColor: '#60a5fa'
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    scales: { y: { beginAtZero: true, grid: { display: false } } }
-                }
-            });
-        }
-
-        function renderSummaryTable() {
-            const tableBody = document.getElementById('summaryTableBody');
-            const monthlyData = {};
-
-            budgetData.forEach(item => {
-                if(!monthlyData[item.month]) {
-                    monthlyData[item.month] = { '수선유지비': 0, '비품': 0, '개량공사': 0, total: 0 };
-                }
-                monthlyData[item.month][item.category] += item.amount;
-                monthlyData[item.month].total += item.amount;
-            });
-
-            const sortedMonths = Object.keys(monthlyData).sort((a, b) => b.localeCompare(a));
-
-            tableBody.innerHTML = sortedMonths.map(month => {
-                const row = monthlyData[month];
-                return `
-                    <tr>
-                        <td class="border border-gray-200 px-4 py-2 font-semibold">${month}</td>
-                        <td class="border border-gray-200 px-4 py-2">${row['수선유지비'].toLocaleString()}</td>
-                        <td class="border border-gray-200 px-4 py-2">${row['비품'].toLocaleString()}</td>
-                        <td class="border border-gray-200 px-4 py-2">${row['개량공사'].toLocaleString()}</td>
-                        <td class="border border-gray-200 px-4 py-2 bg-gray-50 font-bold">${row.total.toLocaleString()}</td>
-                    </tr>
-                `;
-            }).join('');
-            
-            if(sortedMonths.length === 0) {
-                tableBody.innerHTML = `<tr><td colspan="5" class="p-4 text-gray-400">데이터가 없습니다.</td></tr>`;
-            }
-        }
-
-        async function analyzeDataWithAI() {
-            if (budgetData.length === 0) {
-                showAlert('알림', '분석할 데이터가 없습니다.');
-                return;
-            }
-
-            const insightContainer = document.getElementById('ai-insight-container');
-            const insightText = document.getElementById('ai-insight-text');
-            
-            insightContainer.classList.remove('hidden');
-            insightText.innerHTML = '<span class="text-gray-500 text-base font-normal">AI가 데이터를 분석하고 있습니다. 잠시만 기다려주세요... 🤖 (약 5~10초 소요)</span>';
-            
-            // 데이터 전처리 (토큰 절약을 위해 필요한 핵심 데이터만 매핑)
-            const simplifiedData = budgetData.map(item => ({
-                월: item.month,
-                팀원: item.member,
-                항목: item.category,
-                금액: item.amount
-            }));
-
-            const prompt = `다음은 우리 팀의 예산 사용 내역 데이터입니다. 이 데이터를 분석해서 지출 패턴, 비중, 트렌드 등 가장 눈에 띄는 특징이나 인사이트를 찾아주세요. 반드시 **딱 한 줄로 요약**해서 대답해야 합니다.\n\n데이터: ${JSON.stringify(simplifiedData)}`;
-            
-            try {
-                // ⚠️ 외부(GitHub Pages 등)에 배포 시 아래 "" 사이에 발급받으신 Gemini API 키를 입력하세요.
-                // 예시: const apiKey = "AIzaSyYOUR_API_KEY_HERE...";
-                const apiKey = "AQ.Ab8RN6LLzidWJjYVm-w1Q03GjbPOE-tFk3O0snI-JjT5Y_UFDA"; 
-                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`;
-                
-                const payload = {
-                    contents: [{ parts: [{ text: prompt }] }],
-                    systemInstruction: {
-                        parts: [{ text: "당신은 전문적인 재무 데이터 분석가입니다. 주어진 예산 데이터를 분석하여 가장 핵심적인 특징을 통찰력 있고 명확하게 딱 한 줄로 요약해야 합니다." }]
-                    },
-                };
-
-                const response = await fetch(apiUrl, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-                
-                const result = await response.json();
-                const candidate = result.candidates?.[0];
-                
-                if (candidate && candidate.content?.parts?.[0]?.text) {
-                    const aiText = candidate.content.parts[0].text;
-                    insightText.innerHTML = `✨ ${aiText.replace(/\n/g, '')}`;
-                } else {
-                    insightText.innerHTML = '<span class="text-red-500 text-base font-normal">AI 분석 결과를 불러오지 못했습니다.</span>';
-                }
-            } catch (error) {
-                console.error("AI Analysis Error:", error);
-                insightText.innerHTML = '<span class="text-red-500 text-base font-normal">AI 분석 중 오류가 발생했습니다. (API 키 및 네트워크 상태를 확인하세요)</span>';
-            }
-        }
-
-        window.onload = function() {
-            const now = new Date();
-            const monthStr = now.toISOString().substring(0, 7);
-            document.getElementById('month').value = monthStr;
-            
-            renderTeamMembers();
-            fetchData();
-        }
-    </script>
-</body>
-</html>
+    else:
+        st.info("시트에 집계할 데이터가 존재하지 않습니다.")
