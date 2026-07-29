@@ -1,115 +1,64 @@
 from datetime import datetime
-import json
-import gspread
-from google.oauth2.service_account import Credentials
 import pandas as pd
 import plotly.express as px
+import requests
 import streamlit as st
 
-# --- 1. Page Configuration (최상단 배치) ---
+# --- 1. Page Configuration ---
 st.set_page_config(
     page_title="팀 예산 관리 시스템",
     page_icon="📊",
     layout="wide",
 )
 
-# 기본 구글 시트 주소
-DEFAULT_SHEET_URL = "https://docs.google.com/spreadsheets/d/1way2EcB_FqbNp2hF7KUytd6u2OPDfR-oumyCTvK986I/edit?usp=sharing"
-
-
-# --- 2. Google Sheets Connection & Auth ---
-@st.cache_resource(ttl=60)
-def init_gspread():
-    """Streamlit Secrets의 인증 정보와 지정된 시트 URL을 연동"""
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive",
-    ]
-
-    sheet_url = st.secrets.get("SPREADSHEET_URL", DEFAULT_SHEET_URL)
-
-    if "GCP_SERVICE_ACCOUNT" in st.secrets:
-        try:
-            sec = st.secrets["GCP_SERVICE_ACCOUNT"]
-            if isinstance(sec, str):
-                creds_dict = json.loads(sec)
-            else:
-                creds_dict = dict(sec)
-
-            # --- private_key 불필요한 특수문자 및 줄바꿈 자동 정제 ---
-            if "private_key" in creds_dict:
-                pk = creds_dict["private_key"]
-                # 앞뒤에 잘못 포함될 수 있는 마침표, 공백, 따옴표 제거
-                pk = pk.strip().strip(".").strip('"').strip("'")
-                # escape된 \\n 문자를 실제 줄바꿈 \n 으로 변경
-                pk = pk.replace("\\n", "\n")
-                creds_dict["private_key"] = pk
-
-            creds = Credentials.from_service_account_info(
-                creds_dict, scopes=scopes
-            )
-            client = gspread.authorize(creds)
-            sheet = client.open_by_url(sheet_url).sheet1
-
-            # 시트가 완전히 비어있다면 초기 헤더 생성
-            existing_records = sheet.get_all_values()
-            if not existing_records:
-                sheet.append_row(
-                    ["timestamp", "month", "member", "category", "amount"]
-                )
-
-            return sheet
-        except Exception as e:
-            st.error(
-                f"🚨 구글 시트 연결 중 인증 오류 발생: {e}\n\n"
-                "Streamlit Secrets의 'GCP_SERVICE_ACCOUNT' private_key 형식을 확인해 주세요."
-            )
-            return None
-    else:
-        st.warning(
-            "⚠️ Streamlit Secrets에 'GCP_SERVICE_ACCOUNT' 정보가 등록되지 않았습니다."
-        )
-        return None
-
-
-def fetch_data(sheet):
-    """구글 시트 데이터 불러오기"""
-    if sheet is None:
-        return pd.DataFrame(
-            columns=["timestamp", "month", "member", "category", "amount"]
-        )
-
-    try:
-        records = sheet.get_all_records()
-        df = pd.DataFrame(records)
-
-        if not df.empty and "amount" in df.columns:
-            df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0)
-
-        return df
-    except Exception as e:
-        st.error(f"데이터 조회 중 에러 발생: {e}")
-        return pd.DataFrame(
-            columns=["timestamp", "month", "member", "category", "amount"]
-        )
-
-
-def append_data(sheet, row_data):
-    """구글 시트에 신규 데이터 행 추가"""
-    if sheet is None:
-        raise ValueError(
-            "구글 시트 연결이 설정되지 않았습니다. Secrets 설정을 확인해 주세요."
-        )
-
-    formatted_row = [str(x) for x in row_data]
-    sheet.append_row(formatted_row)
-
-
-# --- 3. Initialize Connection & Header ---
-sheet = init_gspread()
+# --- 2. Google Apps Script Web App URL ---
+# 발급받은 URL을 직접 입력해 두었습니다. 
+GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbx3M_JahrsiBd0xHy9ExYaHaF5YcnDOZplHQKyCSjWW-6AZ-81DdTMQJXKwZUzk_iBgBw/exec"
 
 st.title("📊 팀 예산 관리 시스템")
-st.caption("부장님 보고용 월별 예산 취합 및 대시보드")
+st.caption("부장님 보고용 월별 예산 취합 및 대시보드 (Google Apps Script API 연동)")
+
+
+# --- 3. 데이터 조회 및 추가 함수 ---
+@st.cache_data(ttl=5) # 최신 데이터를 빠르게 반영하기 위해 5초 단위 갱신
+def fetch_data_from_gas(url: str) -> pd.DataFrame:
+    """Google Apps Script API를 통해 구글 시트 데이터 로드"""
+    try:
+        # GET 요청으로 시트 데이터(JSON)를 가져옵니다. (리다이렉트 허용)
+        response = requests.get(url, timeout=15, allow_redirects=True)
+        if response.status_code == 200:
+            data = response.json()
+            df = pd.DataFrame(data)
+
+            # amount 컬럼이 있으면 숫자형으로 변환
+            if not df.empty and "amount" in df.columns:
+                df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0)
+            return df
+        else:
+            st.error(f"데이터 로드 실패 (Status Code: {response.status_code})")
+            return pd.DataFrame(
+                columns=["timestamp", "month", "member", "category", "amount"]
+            )
+    except Exception as e:
+        st.error(f"Apps Script 연결 오류: {e}")
+        return pd.DataFrame(
+            columns=["timestamp", "month", "member", "category", "amount"]
+        )
+
+
+def append_data_to_gas(url: str, payload: dict) -> bool:
+    """Google Apps Script API를 통해 구글 시트에 신규 데이터 저장"""
+    try:
+        # POST 요청으로 새 데이터를 전송합니다. (리다이렉트 허용)
+        response = requests.post(url, json=payload, timeout=15, allow_redirects=True)
+        if response.status_code == 200:
+            res_json = response.json()
+            return res_json.get("status") == "success"
+        return False
+    except Exception as e:
+        st.error(f"데이터 저장 중 에러 발생: {e}")
+        return False
+
 
 # --- 4. App Layout (Tabs) ---
 tab1, tab2 = st.tabs(["📝 데이터 입력", "📈 전체 대시보드"])
@@ -123,14 +72,7 @@ with tab1:
         with st.form("budget_form", clear_on_submit=True):
             member = st.selectbox(
                 "팀원 선택",
-                [
-                    "선택하세요",
-                    "부장님",
-                    "팀원1",
-                    "팀원2",
-                    "팀원3",
-                    "팀원4",
-                ],
+                ["선택하세요", "부장님", "팀원1", "팀원2", "팀원3", "팀원4"],
             )
 
             current_month = datetime.now().strftime("%Y-%m")
@@ -154,19 +96,28 @@ with tab1:
                     st.error("사용 금액을 0원 이상 입력해 주세요.")
                 else:
                     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    new_row = [timestamp, month, member, category, amount]
+                    payload = {
+                        "timestamp": timestamp,
+                        "month": month,
+                        "member": member,
+                        "category": category,
+                        "amount": amount,
+                    }
 
-                    try:
-                        append_data(sheet, new_row)
-                        st.success("구글 시트에 데이터가 성공적으로 저장되었습니다!")
-                        st.cache_resource.clear()
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"❌ 저장 실패: {e}")
+                    # 데이터 저장 실행
+                    with st.spinner("구글 시트에 저장 중입니다..."):
+                        success = append_data_to_gas(GAS_WEB_APP_URL, payload)
+                        
+                    if success:
+                        st.success("구글 시트에 성공적으로 저장되었습니다!")
+                        st.cache_data.clear() # 캐시 비우고 최신화
+                        st.rerun() # 화면 새로고침
+                    else:
+                        st.error("❌ 저장에 실패했습니다. (Apps Script 권한 및 코드를 확인해주세요)")
 
     with col2:
         st.subheader("📂 최근 입력 내역")
-        data_df = fetch_data(sheet)
+        data_df = fetch_data_from_gas(GAS_WEB_APP_URL)
 
         if not data_df.empty and "timestamp" in data_df.columns:
             display_df = data_df.sort_values(
@@ -191,11 +142,11 @@ with tab1:
                 height=400,
             )
         else:
-            st.info("현재 저장된 데이터가 없습니다.")
+            st.info("현재 저장된 데이터가 없거나 로드 중입니다.")
 
 # --- TAB 2: 전체 대시보드 ---
 with tab2:
-    data_df = fetch_data(sheet)
+    data_df = fetch_data_from_gas(GAS_WEB_APP_URL)
 
     if not data_df.empty and "amount" in data_df.columns:
         total_amount = data_df["amount"].sum()
