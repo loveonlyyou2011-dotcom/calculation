@@ -132,12 +132,20 @@
             
             <!-- AI 요약 섹션 -->
             <div class="card p-6 bg-yellow-50 border-l-4 border-yellow-400">
-                <h2 class="text-lg font-bold mb-2 flex items-center">
-                    <span class="mr-2">💡</span> 데이터 분석 요약
-                </h2>
+                <div class="flex justify-between items-center mb-2">
+                    <h2 class="text-lg font-bold flex items-center">
+                        <span class="mr-2">💡</span> 데이터 분석 요약
+                    </h2>
+                    <button onclick="analyzeDataWithAI()" class="bg-yellow-500 hover:bg-yellow-600 text-white px-4 py-2 rounded text-sm font-bold shadow transition-colors flex items-center">
+                        <span class="mr-1">✨</span> AI 요약하기
+                    </button>
+                </div>
                 <p id="dashboard-summary" class="text-gray-700 leading-relaxed">
                     데이터를 분석 중입니다...
                 </p>
+                <div id="ai-insight-container" class="hidden mt-4 p-4 bg-white rounded border border-yellow-200 shadow-inner">
+                    <p id="ai-insight-text" class="text-blue-800 font-bold text-lg"></p>
+                </div>
             </div>
 
             <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -535,6 +543,9 @@
 
             // Update AI Summary Text
             document.getElementById('dashboard-summary').innerHTML = generateAISummary(total, budgetData.length, catMap, memMap);
+            
+            // 데이터가 갱신될 때마다 기존 AI 인사이트 창은 숨김 (최신화 유도)
+            document.getElementById('ai-insight-container').classList.add('hidden');
 
             // Charts
             renderCharts(catMap, memMap);
@@ -607,6 +618,62 @@
             
             if(sortedMonths.length === 0) {
                 tableBody.innerHTML = `<tr><td colspan="5" class="p-4 text-gray-400">데이터가 없습니다.</td></tr>`;
+            }
+        }
+
+        async function analyzeDataWithAI() {
+            if (budgetData.length === 0) {
+                showAlert('알림', '분석할 데이터가 없습니다.');
+                return;
+            }
+
+            const insightContainer = document.getElementById('ai-insight-container');
+            const insightText = document.getElementById('ai-insight-text');
+            
+            insightContainer.classList.remove('hidden');
+            insightText.innerHTML = '<span class="text-gray-500 text-base font-normal">AI가 데이터를 분석하고 있습니다. 잠시만 기다려주세요... 🤖 (약 5~10초 소요)</span>';
+            
+            // 데이터 전처리 (토큰 절약을 위해 필요한 핵심 데이터만 매핑)
+            const simplifiedData = budgetData.map(item => ({
+                월: item.month,
+                팀원: item.member,
+                항목: item.category,
+                금액: item.amount
+            }));
+
+            const prompt = `다음은 우리 팀의 예산 사용 내역 데이터입니다. 이 데이터를 분석해서 지출 패턴, 비중, 트렌드 등 가장 눈에 띄는 특징이나 인사이트를 찾아주세요. 반드시 **딱 한 줄로 요약**해서 대답해야 합니다.\n\n데이터: ${JSON.stringify(simplifiedData)}`;
+            
+            try {
+                // ⚠️ 외부(GitHub Pages 등)에 배포 시 아래 "" 사이에 발급받으신 Gemini API 키를 입력하세요.
+                // 예시: const apiKey = "AIzaSyYOUR_API_KEY_HERE...";
+                const apiKey = "AQ.Ab8RN6LLzidWJjYVm-w1Q03GjbPOE-tFk3O0snI-JjT5Y_UFDA"; 
+                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`;
+                
+                const payload = {
+                    contents: [{ parts: [{ text: prompt }] }],
+                    systemInstruction: {
+                        parts: [{ text: "당신은 전문적인 재무 데이터 분석가입니다. 주어진 예산 데이터를 분석하여 가장 핵심적인 특징을 통찰력 있고 명확하게 딱 한 줄로 요약해야 합니다." }]
+                    },
+                };
+
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                
+                const result = await response.json();
+                const candidate = result.candidates?.[0];
+                
+                if (candidate && candidate.content?.parts?.[0]?.text) {
+                    const aiText = candidate.content.parts[0].text;
+                    insightText.innerHTML = `✨ ${aiText.replace(/\n/g, '')}`;
+                } else {
+                    insightText.innerHTML = '<span class="text-red-500 text-base font-normal">AI 분석 결과를 불러오지 못했습니다.</span>';
+                }
+            } catch (error) {
+                console.error("AI Analysis Error:", error);
+                insightText.innerHTML = '<span class="text-red-500 text-base font-normal">AI 분석 중 오류가 발생했습니다. (API 키 및 네트워크 상태를 확인하세요)</span>';
             }
         }
 
