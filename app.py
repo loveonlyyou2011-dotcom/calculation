@@ -17,7 +17,6 @@ GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbx3M_JahrsiBd0xHy9ExY
 st.title("📊 팀 예산 관리 시스템")
 st.caption("부장님 보고용 월별 예산 취합 및 대시보드 (Google Apps Script API 연동)")
 
-
 # --- 3. 데이터 조회 및 추가 함수 ---
 @st.cache_data(ttl=5)
 def fetch_data_from_gas(url: str) -> pd.DataFrame:
@@ -26,6 +25,9 @@ def fetch_data_from_gas(url: str) -> pd.DataFrame:
         response = requests.get(url, timeout=15, allow_redirects=True)
         if response.status_code == 200:
             data = response.json()
+            # 데이터 구조가 dict 안에 data 키로 있을 경우를 대비
+            if isinstance(data, dict) and "data" in data:
+                data = data["data"]
             df = pd.DataFrame(data)
 
             if not df.empty and "amount" in df.columns:
@@ -42,7 +44,6 @@ def fetch_data_from_gas(url: str) -> pd.DataFrame:
             columns=["timestamp", "month", "member", "category", "amount"]
         )
 
-
 def append_data_to_gas(url: str, payload: dict) -> bool:
     """Google Apps Script API를 통해 구글 시트에 신규 데이터 저장"""
     try:
@@ -55,8 +56,22 @@ def append_data_to_gas(url: str, payload: dict) -> bool:
         st.error(f"데이터 저장 중 에러 발생: {e}")
         return False
 
+# --- 4. App State (팀원 목록 관리) ---
+if "custom_members" not in st.session_state:
+    st.session_state.custom_members = []
 
-# --- 4. App Layout (Tabs) ---
+# 데이터 사전 로드 (동적 팀원 목록 추출용)
+data_df = fetch_data_from_gas(GAS_WEB_APP_URL)
+
+existing_members = data_df["member"].dropna().unique().tolist() if not data_df.empty and "member" in data_df.columns else []
+default_members = ["부장님", "팀원1", "팀원2", "팀원3", "팀원4"]
+
+# 기존 멤버, 기본 멤버, 세션에서 추가된 멤버 병합 후 정렬
+all_members = list(set(default_members + existing_members + st.session_state.custom_members))
+all_members = sorted([m for m in all_members if str(m).strip()])
+member_options = ["선택하세요"] + all_members
+
+# --- 5. App Layout (Tabs) ---
 tab1, tab2 = st.tabs(["📝 데이터 입력", "📈 전체 대시보드"])
 
 # --- TAB 1: 데이터 입력 ---
@@ -65,23 +80,27 @@ with tab1:
 
     with col1:
         st.subheader("내역 입력")
+        
+        # 팀원 추가 UI
+        with st.expander("➕ 새 팀원 추가하기"):
+            new_member = st.text_input("추가할 팀원 이름", key="new_mem_input")
+            if st.button("목록에 추가"):
+                if new_member and new_member not in st.session_state.custom_members and new_member not in all_members:
+                    st.session_state.custom_members.append(new_member)
+                    st.success(f"'{new_member}' 팀원이 추가되었습니다.")
+                    st.rerun()
+                elif new_member in all_members:
+                    st.warning("이미 존재하는 팀원입니다.")
+
+        # 메인 폼
         with st.form("budget_form", clear_on_submit=True):
-            member = st.selectbox(
-                "팀원 선택",
-                ["선택하세요", "부장님", "팀원1", "팀원2", "팀원3", "팀원4"],
-            )
-
+            member = st.selectbox("팀원 선택", member_options)
+            
             current_month = datetime.now().strftime("%Y-%m")
-            month = st.text_input(
-                "해당 월 (YYYY-MM)", value=current_month, max_chars=7
-            )
+            month = st.text_input("해당 월 (YYYY-MM)", value=current_month, max_chars=7)
 
-            category = st.selectbox(
-                "예산 항목", ["수선유지비", "비품", "개량공사"]
-            )
-            amount = st.number_input(
-                "사용 금액 (원)", min_value=0, step=1000, value=0
-            )
+            category = st.selectbox("예산 항목", ["수선유지비", "비품", "개량공사"])
+            amount = st.number_input("사용 금액 (원)", min_value=0, step=1000, value=0)
 
             submitted = st.form_submit_button("기록 저장하기")
 
@@ -112,37 +131,34 @@ with tab1:
 
     with col2:
         st.subheader("📂 최근 입력 내역")
-        data_df = fetch_data_from_gas(GAS_WEB_APP_URL)
 
         if not data_df.empty and "timestamp" in data_df.columns:
-            display_df = data_df.sort_values(
-                by="timestamp", ascending=False
-            ).copy()
-            display_df["amount_formatted"] = display_df["amount"].apply(
-                lambda x: f"{int(x):,}원"
-            )
+            display_df = data_df.sort_values(by="timestamp", ascending=False).copy()
+            if "amount" in display_df.columns:
+                display_df["amount_formatted"] = display_df["amount"].apply(
+                    lambda x: f"{int(x):,}원"
+                )
 
-            st.dataframe(
-                display_df[
-                    ["month", "member", "category", "amount_formatted"]
-                ].rename(
-                    columns={
-                        "month": "월",
-                        "member": "팀원",
-                        "category": "항목",
-                        "amount_formatted": "금액",
-                    }
-                ),
-                use_container_width=True,
-                height=400,
-            )
+                cols_to_show = ["month", "member", "category", "amount_formatted"]
+                existing_cols = [c for c in cols_to_show if c in display_df.columns]
+
+                st.dataframe(
+                    display_df[existing_cols].rename(
+                        columns={
+                            "month": "월",
+                            "member": "팀원",
+                            "category": "항목",
+                            "amount_formatted": "금액",
+                        }
+                    ),
+                    use_container_width=True,
+                    height=400,
+                )
         else:
             st.info("현재 저장된 데이터가 없거나 로드 중입니다.")
 
 # --- TAB 2: 전체 대시보드 ---
 with tab2:
-    data_df = fetch_data_from_gas(GAS_WEB_APP_URL)
-
     if not data_df.empty and "amount" in data_df.columns:
         total_amount = data_df["amount"].sum()
         total_count = len(data_df)
@@ -150,14 +166,20 @@ with tab2:
         cat_agg = data_df.groupby("category")["amount"].sum()
         top_category = cat_agg.idxmax() if not cat_agg.empty else "-"
         top_cat_amount = cat_agg.max() if not cat_agg.empty else 0
+        
+        mem_agg = data_df.groupby("member")["amount"].sum()
+        top_member = mem_agg.idxmax() if not mem_agg.empty else "-"
+        top_mem_amount = mem_agg.max() if not mem_agg.empty else 0
+
+        # AI 데이터 분석 요약 기능
+        st.success(f"💡 **데이터 분석 요약**\n\n"
+                   f"현재까지 총 **{total_count}건**의 내역이 등록되었으며, 전체 누적 사용액은 **{int(total_amount):,}원**입니다. "
+                   f"가장 많은 예산이 소요된 항목은 **{top_category}**({int(top_cat_amount):,}원)이며, "
+                   f"누적 예산을 가장 많이 사용한 팀원은 **{top_member}**({int(top_mem_amount):,}원)입니다.")
 
         m1, m2, m3 = st.columns(3)
         m1.metric("전체 누적 사용액", f"{int(total_amount):,}원")
-        m2.metric(
-            "최대 사용 항목",
-            f"{top_category}",
-            f"{int(top_cat_amount):,}원",
-        )
+        m2.metric("최대 사용 항목", f"{top_category}", f"{int(top_cat_amount):,}원")
         m3.metric("데이터 건수", f"{total_count}건")
 
         st.divider()
@@ -178,11 +200,9 @@ with tab2:
 
         with c2:
             st.subheader("👥 팀원별 누적 사용액")
-            member_agg = (
-                data_df.groupby("member")["amount"].sum().reset_index()
-            )
+            member_agg_df = mem_agg.reset_index()
             fig_bar = px.bar(
-                member_agg,
+                member_agg_df,
                 x="member",
                 y="amount",
                 labels={"member": "팀원", "amount": "사용 금액(원)"},
@@ -209,7 +229,6 @@ with tab2:
         pivot_df["합계"] = pivot_df.sum(axis=1)
         pivot_df = pivot_df.sort_index(ascending=False)
 
-        # 💡 applymap 대신 map 메서드를 사용하도록 변경 (Pandas 2.1.0+ 호환)
         formatted_pivot = pivot_df.map(lambda x: f"{int(x):,}원")
         st.dataframe(formatted_pivot, use_container_width=True)
 
