@@ -12,7 +12,6 @@ st.set_page_config(
 )
 
 # --- 2. Google Apps Script Web App URL ---
-# 발급받은 URL을 직접 입력해 두었습니다. 
 GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbx3M_JahrsiBd0xHy9ExYaHaF5YcnDOZplHQKyCSjWW-6AZ-81DdTMQJXKwZUzk_iBgBw/exec"
 
 st.title("📊 팀 예산 관리 시스템")
@@ -20,17 +19,15 @@ st.caption("부장님 보고용 월별 예산 취합 및 대시보드 (Google Ap
 
 
 # --- 3. 데이터 조회 및 추가 함수 ---
-@st.cache_data(ttl=5) # 최신 데이터를 빠르게 반영하기 위해 5초 단위 갱신
+@st.cache_data(ttl=5)
 def fetch_data_from_gas(url: str) -> pd.DataFrame:
     """Google Apps Script API를 통해 구글 시트 데이터 로드"""
     try:
-        # GET 요청으로 시트 데이터(JSON)를 가져옵니다. (리다이렉트 허용)
         response = requests.get(url, timeout=15, allow_redirects=True)
         if response.status_code == 200:
             data = response.json()
             df = pd.DataFrame(data)
 
-            # amount 컬럼이 있으면 숫자형으로 변환
             if not df.empty and "amount" in df.columns:
                 df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0)
             return df
@@ -49,7 +46,6 @@ def fetch_data_from_gas(url: str) -> pd.DataFrame:
 def append_data_to_gas(url: str, payload: dict) -> bool:
     """Google Apps Script API를 통해 구글 시트에 신규 데이터 저장"""
     try:
-        # POST 요청으로 새 데이터를 전송합니다. (리다이렉트 허용)
         response = requests.post(url, json=payload, timeout=15, allow_redirects=True)
         if response.status_code == 200:
             res_json = response.json()
@@ -104,14 +100,13 @@ with tab1:
                         "amount": amount,
                     }
 
-                    # 데이터 저장 실행
                     with st.spinner("구글 시트에 저장 중입니다..."):
                         success = append_data_to_gas(GAS_WEB_APP_URL, payload)
-                        
+
                     if success:
                         st.success("구글 시트에 성공적으로 저장되었습니다!")
-                        st.cache_data.clear() # 캐시 비우고 최신화
-                        st.rerun() # 화면 새로고침
+                        st.cache_data.clear()
+                        st.rerun()
                     else:
                         st.error("❌ 저장에 실패했습니다. (Apps Script 권한 및 코드를 확인해주세요)")
 
@@ -214,7 +209,8 @@ with tab2:
         pivot_df["합계"] = pivot_df.sum(axis=1)
         pivot_df = pivot_df.sort_index(ascending=False)
 
-        formatted_pivot = pivot_df.applymap(lambda x: f"{int(x):,}원")
+        # 💡 applymap 대신 map 메서드를 사용하도록 변경 (Pandas 2.1.0+ 호환)
+        formatted_pivot = pivot_df.map(lambda x: f"{int(x):,}원")
         st.dataframe(formatted_pivot, use_container_width=True)
 
     else:
